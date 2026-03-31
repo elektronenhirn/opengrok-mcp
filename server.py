@@ -6,15 +6,16 @@
 # ]
 # ///
 
+import html
 import netrc
 import os
-from typing import List, Optional, Dict, Any
+import re
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth
 from mcp.server.fastmcp import FastMCP
-import re
 
 
 def _sanitize(s: Optional[str]) -> Optional[str]:
@@ -62,16 +63,16 @@ def _og_url(path: str) -> str:
 
 
 def search_code_raw(
-    search_key: str, # 'def', 'symbol', 'full', etc.
+    search_key: str,  # 'def', 'symbol', 'full', etc.
     query: str,
     project: Optional[str] = None,
     path: Optional[str] = None,
     fileType: Optional[str] = None,
     max_results: int = 50,
     start: int = 0,
-) -> List[Dict[str, Any]]:
+) -> str:
     """
-    Search code in Opengrok and return a list of hits
+    Search code in Opengrok and return formatted text results.
 
     Types which are wrapped here are:
 
@@ -81,9 +82,9 @@ def search_code_raw(
     """
 
     params = {
-        search_key : query,
-        "projects" : project,
-        "maxresults" : max_results,
+        search_key: query,
+        "projects": project,
+        "maxresults": max_results,
         "start": start,
         "path": path or "",
         "type": fileType or "",
@@ -100,33 +101,35 @@ def search_code_raw(
 
     results_by_path = data.get("results") or {}
 
-    hits: List[Dict[str, Any]] = []
-    
+    if not results_by_path:
+        return "No results found."
+
+    lines: List[str] = []
+    hit_count = 0
+
     for file_path, matches in results_by_path.items():
         for m in matches:
+            hit_count += 1
             line_number_raw = m.get("lineNumber")
             try:
                 line_number = int(line_number_raw) if line_number_raw is not None else None
             except ValueError:
                 line_number = None
-            
+
             line_text = m.get("line") or ""
-            tag = m.get("tag")
+            # Remove HTML tags and decode HTML entities
+            clean_line = re.sub(r"<[^>]+>", "", line_text)
+            clean_line = html.unescape(clean_line)
+            clean_line = _sanitize(clean_line)
+            url = build_clickable_url(project, file_path, line_number)
 
-            clean_line = _sanitize(re.sub(r"</?b>", "", line_text))
+            lines.append(f"{file_path}:{line_number}")
+            lines.append(f"  {clean_line}")
+            lines.append(f"  {url}")
+            lines.append("")
 
-            hits.append(
-                {
-                    "project": project, # No project but might be in the future
-                    "path": file_path,
-                    "line": line_number,
-                    "snippet": clean_line,
-                    "tag": _sanitize(tag),
-                    "clickable_url": build_clickable_url(project, file_path, line_number)
-                }
-            )
-
-    return hits
+    header = f"Found {hit_count} results:\n\n"
+    return header + "\n".join(lines).rstrip()
 
 def build_clickable_url(project, path, line_num) -> str:
     """
@@ -142,16 +145,17 @@ def search_references(
     project: Optional[str] = None,
     path: Optional[str] = None,
     fileType: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    
+) -> str:
     """
-    Search for a reference to a specific symbol
-    Other data is optional but could reduce the search to a specific path, filetype or project
-    It will also produce a clickable link under url
+    Search for references to a specific symbol in the codebase.
+    Returns file paths, line numbers, code snippets, and clickable URLs.
 
-    The model should use this to search for all uses of a specific symbol in the codebase
+    Args:
+        symbol: The symbol to search for
+        project: Optional project name to limit search scope
+        path: Optional path filter
+        fileType: Optional file type filter (e.g., "c", "java")
     """
-
     return search_code_raw(
         search_key="symbol",
         query=symbol,
@@ -166,15 +170,17 @@ def search_defs(
     project: Optional[str] = None,
     path: Optional[str] = None,
     fileType: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> str:
     """
-    Search for definitions for a specific symbol
-    Other data is optional but could reduce the search to a specific path, filetype or project
-    It will also produce a clickable link under url
+    Search for definitions of a specific symbol in the codebase.
+    Returns file paths, line numbers, code snippets, and clickable URLs.
 
-    The model should use this to search for all definitions for a symbol in the codebase
+    Args:
+        symbol: The symbol to find definitions for
+        project: Optional project name to limit search scope
+        path: Optional path filter
+        fileType: Optional file type filter (e.g., "c", "java")
     """
-
     return search_code_raw(
         search_key="def",
         query=symbol,
@@ -185,22 +191,24 @@ def search_defs(
 
 @mcp.tool()
 def search_full(
-    symbol: str,
+    query: str,
     project: Optional[str] = None,
     path: Optional[str] = None,
     fileType: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> str:
     """
-    Search for anything within the codebase
-    Other data is optional but could reduce the search to a specific path, filetype or project
-    It will also produce a clickable link under url
+    Full-text search across the codebase.
+    Returns file paths, line numbers, code snippets, and clickable URLs.
 
-    The model should use this to search the entire codebase for anything
+    Args:
+        query: The text to search for
+        project: Optional project name to limit search scope
+        path: Optional path filter
+        fileType: Optional file type filter (e.g., "c", "java")
     """
-
     return search_code_raw(
         search_key="full",
-        query=symbol,
+        query=query,
         project=project,
         path=path,
         fileType=fileType,
@@ -212,12 +220,16 @@ def get_file_snippet(
     path: str,
     start_line: int = 1,
     end_line: int = 200,
-) -> Dict[str, Any]:
+) -> str:
     """
-    Return a slice of a file (inclusive line range) from OpenGrok
+    Retrieve a section of a file from OpenGrok with line numbers.
+    Use this to get more context around search results.
 
-    The model should use this after any search_* call when it wants more context
-    around a hit. Keep line ranges reasonably small to avoid bloating context
+    Args:
+        project: The project name
+        path: Path to the file within the project
+        start_line: First line to retrieve (default: 1)
+        end_line: Last line to retrieve (default: 200)
     """
     rel = f"/raw/{path.lstrip('/')}"
 
@@ -247,23 +259,15 @@ def get_file_snippet(
         f"{i+1}: {line}" for i, line in enumerate(snippet_lines, start=start_idx)
     ]
 
-    return {
-        "project": project,
-        "path": path,
-        "start_line": start_line,
-        "end_line": end_idx,
-        "total_lines": total_lines_read,
-        "text": "\n".join(numbered),
-    }
+    header = f"File: {path}\nLines {start_line}-{end_idx}:\n\n"
+    return header + "\n".join(numbered)
 
 @mcp.tool()
-def list_projects() -> List[Dict[str, Any]]:
+def list_projects() -> str:
     """
-    List available OpenGrok projects
-
-    Useful for the model to decide where to search
+    List all available OpenGrok projects.
+    Use this to discover which projects can be searched.
     """
-
     resp = requests.get(
         _og_url("/api/v1/projects"),
         auth=_og_basic_auth(),
@@ -272,20 +276,19 @@ def list_projects() -> List[Dict[str, Any]]:
 
     # If API returns 401 (requires bearer token), fall back to HTML scraping
     if resp.status_code == 401:
-        return _list_projects_from_html()
+        projects = _list_projects_from_html()
+    else:
+        resp.raise_for_status()
+        projects = sorted(resp.json())
 
-    resp.raise_for_status()
-    data = resp.json()
+    if not projects:
+        return "No projects found."
 
-    projects: List[Dict[str, Any]] = []
-
-    for p in data:
-        projects.append({"name": str(p)})
-
-    return projects
+    header = f"Available projects ({len(projects)}):\n\n"
+    return header + "\n".join(f"- {p}" for p in projects)
 
 
-def _list_projects_from_html() -> List[Dict[str, Any]]:
+def _list_projects_from_html() -> List[str]:
     """
     Scrape project list from the OpenGrok main page.
     Used as fallback when /api/v1/projects requires bearer token auth.
@@ -299,9 +302,7 @@ def _list_projects_from_html() -> List[Dict[str, Any]]:
 
     # Extract project names from xref links on the main page
     project_names = re.findall(r'/xref/([^/\"]+)/?[\"<]', resp.text)
-    unique_projects = sorted(set(project_names))
-
-    return [{"name": p} for p in unique_projects]
+    return sorted(set(project_names))
 
 #hits = search_code_raw("full", "bi_reverse", "zlib")
 #print(hits)
