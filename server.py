@@ -1,20 +1,53 @@
+#!/usr/bin/env -S uv run
+# /// script
+# dependencies = [
+#   "mcp[cli]>=1.25.0",
+#   "requests>=2.32.5",
+# ]
+# ///
+
+import netrc
 import os
 from typing import List, Optional, Dict, Any
+from urllib.parse import urlparse
 
 import requests
+from requests.auth import HTTPBasicAuth
 from mcp.server.fastmcp import FastMCP
 import re
 
 OPENGROK_BASE_URL = os.environ.get("OPENGROK_BASE_URL", "http://localhost:8080/source")
-OPENGROK_TOKEN = os.environ.get("OPENGROK_TOKEN") # optional bearer token
 
 mcp = FastMCP("OpenGrokMCP")
 
-def _og_headers() -> Dict[str, str]:
-    headers = {}
-    if OPENGROK_TOKEN:
-        headers["Authorization"] = f"Bearer {OPENGROK_TOKEN}"
-    return headers
+def _og_basic_auth() -> HTTPBasicAuth:
+    """Return HTTPBasicAuth from ~/.netrc for the OpenGrok host.
+
+    Raises RuntimeError if the .netrc file is missing, unparseable, or does
+    not contain an entry for the configured OpenGrok host.
+    """
+    host = urlparse(OPENGROK_BASE_URL).hostname
+    if not host:
+        raise RuntimeError(
+            f"Cannot determine hostname from OPENGROK_BASE_URL='{OPENGROK_BASE_URL}'"
+        )
+    try:
+        creds = netrc.netrc().authenticators(host)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"No ~/.netrc file found. Please add an entry for '{host}'."
+        )
+    except netrc.NetrcParseError as exc:
+        raise RuntimeError(f"Failed to parse ~/.netrc: {exc}")
+
+    if not creds:
+        raise RuntimeError(
+            f"No .netrc entry found for host '{host}'. "
+            "Please add a 'machine' entry with login and password."
+        )
+
+    login, _, password = creds
+    return HTTPBasicAuth(login, password or "")
 
 def _og_url(path: str) -> str:
     # path is something similar to /api/v1/search
@@ -51,7 +84,7 @@ def search_code_raw(
 
     resp = requests.get(
         _og_url("/api/v1/search"),
-        headers=_og_headers(),
+        auth=_og_basic_auth(),
         params=params,
         timeout=30
     )
@@ -183,7 +216,7 @@ def get_file_snippet(
 
     resp = requests.get(
         _og_url(rel),
-        headers=_og_headers(),
+        auth=_og_basic_auth(),
         timeout=30,
     )
     resp.raise_for_status()
@@ -217,7 +250,7 @@ def list_projects() -> List[Dict[str, Any]]:
 
     resp = requests.get(
         _og_url("/api/v1/projects"),
-        headers = _og_headers(),
+        auth=_og_basic_auth(),
         timeout=30,
     )
 

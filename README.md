@@ -31,6 +31,12 @@ uv sync
 source .venv/bin/activate
 ```
 
+## Authentication
+
+This fork of the MCP server uses the .netrc credentials. A Token is not supported here.
+
+The OpenGrok instance needs to have Basic Authentication enabled.
+
 ## MCP Clients
 
 This can be run multiple MCP clients but may require editing to work elsewhere
@@ -45,7 +51,6 @@ This can be run multiple MCP clients but may require editing to work elsewhere
       "args": ["server.py"],
       "env": {
         "OPENGROK_BASE_URL": "http://localhost:8080",
-        "OPENGROK_TOKEN": "your-token-if-needed"
       }
     }
   }
@@ -62,7 +67,6 @@ args = ["/route/to/opengrok-mcp/server.py"]
 
 [mcp_servers.OpenGrok.env]
 OPENGROK_BASE_URL = "http://localhost:8080"
-OPENGROK_TOKEN="your-token-if-needed"
 ```
 
 ---
