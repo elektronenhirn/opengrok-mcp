@@ -224,7 +224,7 @@ def get_file_snippet(
     resp = requests.get(
         _og_url(rel),
         auth=_og_basic_auth(),
-        timeout=60,
+        timeout=30,
         stream=True,
     )
     resp.raise_for_status()
@@ -270,6 +270,11 @@ def list_projects() -> List[Dict[str, Any]]:
         timeout=30,
     )
 
+    # If API returns 401 (requires bearer token), fall back to HTML scraping
+    if resp.status_code == 401:
+        return _list_projects_from_html()
+
+    resp.raise_for_status()
     data = resp.json()
 
     projects: List[Dict[str, Any]] = []
@@ -278,6 +283,25 @@ def list_projects() -> List[Dict[str, Any]]:
         projects.append({"name": str(p)})
 
     return projects
+
+
+def _list_projects_from_html() -> List[Dict[str, Any]]:
+    """
+    Scrape project list from the OpenGrok main page.
+    Used as fallback when /api/v1/projects requires bearer token auth.
+    """
+    resp = requests.get(
+        OPENGROK_BASE_URL,
+        auth=_og_basic_auth(),
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+    # Extract project names from xref links on the main page
+    project_names = re.findall(r'/xref/([^/\"]+)/?[\"<]', resp.text)
+    unique_projects = sorted(set(project_names))
+
+    return [{"name": p} for p in unique_projects]
 
 #hits = search_code_raw("full", "bi_reverse", "zlib")
 #print(hits)
