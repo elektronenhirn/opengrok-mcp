@@ -16,6 +16,13 @@ from requests.auth import HTTPBasicAuth
 from mcp.server.fastmcp import FastMCP
 import re
 
+
+def _sanitize(s: Optional[str]) -> Optional[str]:
+    """Strip lone UTF-16 surrogates that cannot be encoded as UTF-8."""
+    if s is None:
+        return None
+    return s.encode("utf-8", errors="replace").decode("utf-8")
+
 OPENGROK_BASE_URL = os.environ.get("OPENGROK_BASE_URL", "http://localhost:8080/source")
 
 mcp = FastMCP("OpenGrokMCP")
@@ -106,7 +113,7 @@ def search_code_raw(
             line_text = m.get("line") or ""
             tag = m.get("tag")
 
-            clean_line = re.sub(r"</?b>", "", line_text)
+            clean_line = _sanitize(re.sub(r"</?b>", "", line_text))
 
             hits.append(
                 {
@@ -114,7 +121,7 @@ def search_code_raw(
                     "path": file_path,
                     "line": line_number,
                     "snippet": clean_line,
-                    "tag": tag,
+                    "tag": _sanitize(tag),
                     "clickable_url": build_clickable_url(project, file_path, line_number)
                 }
             )
@@ -217,16 +224,25 @@ def get_file_snippet(
     resp = requests.get(
         _og_url(rel),
         auth=_og_basic_auth(),
-        timeout=30,
+        timeout=60,
+        stream=True,
     )
     resp.raise_for_status()
-    content = resp.text.splitlines()
 
-    # Clamp bounds
+    # Stream line-by-line; stop as soon as we have read past end_line so we
+    # never need to download the entire file (important for large files).
     start_idx = max(start_line - 1, 0)
-    end_idx = min(end_line, len(content))
+    all_lines: List[str] = []
+    for raw_line in resp.iter_lines(decode_unicode=True):
+        all_lines.append(raw_line if raw_line is not None else "")
+        if len(all_lines) >= end_line:
+            break
+    resp.close()
 
-    snippet_lines = content[start_idx:end_idx]
+    total_lines_read = len(all_lines)
+    end_idx = min(end_line, total_lines_read)
+
+    snippet_lines = all_lines[start_idx:end_idx]
     numbered = [
         f"{i+1}: {line}" for i, line in enumerate(snippet_lines, start=start_idx)
     ]
@@ -236,7 +252,7 @@ def get_file_snippet(
         "path": path,
         "start_line": start_line,
         "end_line": end_idx,
-        "total_lines": len(content),
+        "total_lines": total_lines_read,
         "text": "\n".join(numbered),
     }
 
