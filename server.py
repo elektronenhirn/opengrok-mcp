@@ -231,7 +231,7 @@ def get_file_snippet(
         start_line: First line to retrieve (default: 1)
         end_line: Last line to retrieve (default: 200)
     """
-    rel = f"/raw/{path.lstrip('/')}"
+    rel = f"/raw/{project}/{path.lstrip('/')}"
 
     resp = requests.get(
         _og_url(rel),
